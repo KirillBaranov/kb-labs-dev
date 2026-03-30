@@ -1,0 +1,48 @@
+version: 2
+
+project_name: kb-dev
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kb-dev
+    main: .
+    binary: kb-dev
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+        -X main.version={{.Version}}
+        -X main.commit={{.Commit}}
+        -X main.date={{.Date}}
+
+archives:
+  - id: binaries
+    format: binary
+    name_template: "kb-dev-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  github:
+    owner: KirillBaranov
+    name: kb-labs-dev
+  draft: false
+  prerelease: auto

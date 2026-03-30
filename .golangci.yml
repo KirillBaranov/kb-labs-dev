@@ -1,0 +1,62 @@
+version: "2"
+
+linters:
+  disable-all: true
+  enable:
+    # Correctness
+    - errcheck       # check all errors are handled
+    - govet          # go vet passes
+    - staticcheck    # comprehensive static analysis
+    - ineffassign    # detect ineffectual assignments
+    - unused         # detect unused code
+
+    # Style / maintainability
+    - godot          # doc comments end with a period
+    - gocritic       # various opinionated checks
+    - misspell       # catch common misspellings
+
+    # Parameters & arguments
+    - unparam        # detect unused function parameters
+
+    # Safety
+    - bodyclose      # http response body closed
+
+    # Note: gosec and noctx are intentionally omitted.
+    # kb-dev is a process manager — all input comes from trusted config files.
+    # gosec flags every exec.Command and os.ReadFile as "tainted input" which
+    # are false positives here. noctx requires context on every net.Dial which
+    # is overkill for CLI health probes. We use context properly where it matters
+    # (HTTP probes, command execution) and errcheck catches unclosed resources.
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - shadow # too noisy in table-driven tests
+
+  godot:
+    scope: declarations
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+    disabled-checks:
+      - commentedOutCode
+      - whyNoLint
+
+issues:
+  exclude-rules:
+    # Test files: relax some rules.
+    - path: _test\.go
+      linters:
+        - errcheck
+        - godot
+
+  max-issues-per-linter: 0
+  max-same-issues: 0
