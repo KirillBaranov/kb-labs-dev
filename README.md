@@ -17,6 +17,8 @@ kb-dev manages local development services with proper process tracking, health c
 - ✅ **Rich PID files** — JSON with user, timestamp, command (not bare numbers)
 - ✅ **Environment resolution** — cached node/pnpm paths, no login shell dependency
 - ✅ **Agent-first JSON protocol** — `ok` field, `hint` commands, `depsState`, `logsTail`
+- ✅ **Resource monitoring** — CPU% and memory per service via `status`
+- ✅ **Cross-process locking** — `flock` prevents concurrent kb-dev instances from duplicating services
 - ✅ **JSONL streaming** — real-time event monitoring via `watch`
 - ✅ **Docker/Colima** — auto-detect and start Docker runtime on macOS
 
@@ -323,6 +325,8 @@ make snapshot
 | Parallel start | Serial loop | Goroutine per service |
 | Agent support | `--json` flag only | `ensure`, `ready`, `watch`, `depsState`, `hint` |
 | PID files | Bare number | JSON (user, timestamp, command) |
+| Concurrent safety | None (race conditions) | `flock` cross-process lock (30s timeout) |
+| Resource monitoring | None | CPU% + memory per service |
 | Shell dependency | bash, jq, curl, lsof | Single Go binary |
 
 ## License

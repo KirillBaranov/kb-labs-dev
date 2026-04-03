@@ -29,6 +29,11 @@ type Manager struct {
 	rootDir  string
 	envCache *environ.EnvCache
 	events   chan Event
+
+	// Per-service locks prevent concurrent start/stop of the same service.
+	// Without this, "ensure rest gateway" can try to start redis twice
+	// because both rest and gateway depend on it and resolve deps in parallel.
+	svcLocks map[string]*sync.Mutex
 }
 
 // New creates a Manager from a parsed config.
@@ -38,10 +43,12 @@ func New(cfg *config.Config, rootDir string) *Manager {
 		services: make(map[string]*service.Service),
 		rootDir:  rootDir,
 		events:   make(chan Event, 100),
+		svcLocks: make(map[string]*sync.Mutex),
 	}
 
 	for id, svcCfg := range cfg.Services {
 		m.services[id] = service.New(id, svcCfg)
+		m.svcLocks[id] = &sync.Mutex{}
 	}
 
 	return m
@@ -102,8 +109,34 @@ func (m *Manager) ResolveEnv() {
 	m.envCache = cache
 }
 
+// withLock acquires a cross-process file lock for mutation operations.
+// Prevents two concurrent kb-dev instances from starting/stopping the same services.
+func (m *Manager) withLock(fn func() *Result) *Result {
+	lock, err := process.AcquireLock(filepath.Join(m.rootDir, m.cfg.Settings.PIDDir))
+	if err != nil {
+		return &Result{
+			OK:      false,
+			Actions: []Action{{Action: "failed", Error: err.Error()}},
+			Hint:    "another kb-dev instance is running. Wait for it to finish or kill it: pkill -f kb-dev",
+		}
+	}
+	defer lock.Release()
+
+	// Re-reconcile under lock — state may have changed while waiting.
+	_ = m.Reconcile()
+
+	return fn()
+}
+
 // Start starts the specified services with dependency resolution.
+// Acquires a cross-process file lock to prevent duplicate starts from concurrent kb-dev instances.
 func (m *Manager) Start(ctx context.Context, targets []string, force bool) *Result {
+	return m.withLock(func() *Result {
+		return m.startInternal(ctx, targets, force)
+	})
+}
+
+func (m *Manager) startInternal(ctx context.Context, targets []string, force bool) *Result {
 	allNeeded := DepsOf(targets, m.cfg.Services)
 	layers, _ := TopoLayers(m.cfg.Services)
 
@@ -164,10 +197,15 @@ func (m *Manager) startLayer(ctx context.Context, targets []string, force bool) 
 }
 
 func (m *Manager) startOne(ctx context.Context, id string, force bool) Action {
+	// Per-service lock prevents duplicate starts when multiple dependents
+	// resolve the same dependency in parallel.
+	m.svcLocks[id].Lock()
+	defer m.svcLocks[id].Unlock()
+
 	svc := m.services[id]
 	state := svc.GetState()
 
-	// Already alive — skip.
+	// Already alive — skip (re-check under lock).
 	if state == service.StateAlive {
 		return Action{Service: id, Action: "skipped", Reason: "already alive"}
 	}
@@ -301,6 +339,12 @@ func (m *Manager) startTimeout() time.Duration {
 
 // Stop stops the specified services.
 func (m *Manager) Stop(ctx context.Context, targets []string, cascade bool) *Result {
+	return m.withLock(func() *Result {
+		return m.stopInternal(ctx, targets, cascade)
+	})
+}
+
+func (m *Manager) stopInternal(_ context.Context, targets []string, cascade bool) *Result {
 	toStop := make([]string, len(targets))
 	copy(toStop, targets)
 
@@ -353,51 +397,54 @@ func (m *Manager) Stop(ctx context.Context, targets []string, cascade bool) *Res
 
 // Restart stops then starts services, with optional cascade.
 func (m *Manager) Restart(ctx context.Context, targets []string, cascade, force bool) *Result {
-	stopResult := m.Stop(ctx, targets, cascade)
-	time.Sleep(500 * time.Millisecond)
-	startResult := m.Start(ctx, targets, force)
+	return m.withLock(func() *Result {
+		stopResult := m.stopInternal(ctx, targets, cascade)
+		time.Sleep(500 * time.Millisecond)
+		startResult := m.startInternal(ctx, targets, force)
 
-	allActions := make([]Action, 0, len(stopResult.Actions)+len(startResult.Actions))
-	allActions = append(allActions, stopResult.Actions...)
-	allActions = append(allActions, startResult.Actions...)
-	return &Result{
-		OK:      startResult.OK,
-		Actions: allActions,
-		Hint:    startResult.Hint,
-	}
+		allActions := make([]Action, 0, len(stopResult.Actions)+len(startResult.Actions))
+		allActions = append(allActions, stopResult.Actions...)
+		allActions = append(allActions, startResult.Actions...)
+		return &Result{
+			OK:      startResult.OK,
+			Actions: allActions,
+			Hint:    startResult.Hint,
+		}
+	})
 }
 
 // Ensure brings targets to alive state idempotently.
 // Already alive → skip. Dead → start. Failed → restart.
 func (m *Manager) Ensure(ctx context.Context, targets []string) *Result {
-	var actions []Action
-	toStart := make([]string, 0)
+	return m.withLock(func() *Result {
+		var actions []Action
+		toStart := make([]string, 0)
 
-	for _, id := range targets {
-		svc := m.services[id]
-		state := svc.GetState()
+		for _, id := range targets {
+			svc := m.services[id]
+			state := svc.GetState()
 
-		switch state {
-		case service.StateAlive:
-			actions = append(actions, Action{Service: id, Action: "skipped", Reason: "already alive"})
-		case service.StateFailed:
-			// Reset to dead so we can start again.
-			_ = svc.SetState(service.StateDead, "")
-			toStart = append(toStart, id)
-		default:
-			toStart = append(toStart, id)
+			switch state {
+			case service.StateAlive:
+				actions = append(actions, Action{Service: id, Action: "skipped", Reason: "already alive"})
+			case service.StateFailed:
+				_ = svc.SetState(service.StateDead, "")
+				toStart = append(toStart, id)
+			default:
+				toStart = append(toStart, id)
+			}
 		}
-	}
 
-	if len(toStart) > 0 {
-		result := m.Start(ctx, toStart, true) // force=true for ensure
-		actions = append(actions, result.Actions...)
-		if !result.OK {
-			return &Result{OK: false, Actions: actions, Hint: result.Hint}
+		if len(toStart) > 0 {
+			result := m.startInternal(ctx, toStart, true)
+			actions = append(actions, result.Actions...)
+			if !result.OK {
+				return &Result{OK: false, Actions: actions, Hint: result.Hint}
+			}
 		}
-	}
 
-	return &Result{OK: true, Actions: actions}
+		return &Result{OK: true, Actions: actions}
+	})
 }
 
 // Ready blocks until all targets are alive or timeout expires.
