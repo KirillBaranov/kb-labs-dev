@@ -9,30 +9,43 @@ import (
 func writeTestConfig(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "dev.config.json")
+	path := filepath.Join(dir, "devservices.yaml")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
-const minimalConfig = `{
-  "version": "1.0.0",
-  "name": "test",
-  "groups": {"infra": ["a", "b"], "app": ["c"]},
-  "services": {
-    "a": {"name": "A", "type": "node", "command": "echo a", "port": 3000},
-    "b": {"name": "B", "type": "docker", "command": "echo b", "port": 3001, "dependsOn": ["a"]},
-    "c": {"name": "C", "type": "node", "command": "echo c", "port": 3002, "dependsOn": ["b"]}
-  },
-  "settings": {}
-}`
+const minimalConfig = `
+name: test
+groups:
+  infra: [a, b]
+  app:   [c]
+services:
+  a:
+    name: A
+    type: node
+    command: echo a
+    port: 3000
+  b:
+    name: B
+    type: docker
+    command: echo b
+    port: 3001
+    depends_on: [a]
+  c:
+    name: C
+    type: node
+    command: echo c
+    port: 3002
+    depends_on: [b]
+`
 
 func TestLoadMinimal(t *testing.T) {
 	path := writeTestConfig(t, minimalConfig)
-	cfg, err := Load(path)
+	cfg, err := LoadFile(path)
 	if err != nil {
-		t.Fatalf("Load() error: %v", err)
+		t.Fatalf("LoadFile() error: %v", err)
 	}
 
 	if len(cfg.Services) != 3 {
@@ -45,9 +58,9 @@ func TestLoadMinimal(t *testing.T) {
 
 func TestLoadAppliesDefaults(t *testing.T) {
 	path := writeTestConfig(t, minimalConfig)
-	cfg, err := Load(path)
+	cfg, err := LoadFile(path)
 	if err != nil {
-		t.Fatalf("Load() error: %v", err)
+		t.Fatalf("LoadFile() error: %v", err)
 	}
 
 	if cfg.Settings.LogsDir != ".kb/logs/tmp" {
@@ -65,50 +78,51 @@ func TestLoadAppliesDefaults(t *testing.T) {
 }
 
 func TestLoadDetectsCycle(t *testing.T) {
-	config := `{
-      "version": "1.0.0",
-      "groups": {},
-      "services": {
-        "a": {"name": "A", "command": "echo a", "dependsOn": ["b"]},
-        "b": {"name": "B", "command": "echo b", "dependsOn": ["a"]}
-      },
-      "settings": {}
-    }`
+	config := `
+name: test
+services:
+  a:
+    command: echo a
+    depends_on: [b]
+  b:
+    command: echo b
+    depends_on: [a]
+`
 	path := writeTestConfig(t, config)
-	_, err := Load(path)
+	_, err := LoadFile(path)
 	if err == nil {
 		t.Fatal("expected cycle error, got nil")
 	}
 }
 
 func TestLoadDetectsDanglingDep(t *testing.T) {
-	config := `{
-      "version": "1.0.0",
-      "groups": {},
-      "services": {
-        "a": {"name": "A", "command": "echo a", "dependsOn": ["nonexistent"]}
-      },
-      "settings": {}
-    }`
+	config := `
+name: test
+services:
+  a:
+    command: echo a
+    depends_on: [nonexistent]
+`
 	path := writeTestConfig(t, config)
-	_, err := Load(path)
+	_, err := LoadFile(path)
 	if err == nil {
 		t.Fatal("expected dangling dep error, got nil")
 	}
 }
 
 func TestLoadDetectsDuplicatePort(t *testing.T) {
-	config := `{
-      "version": "1.0.0",
-      "groups": {},
-      "services": {
-        "a": {"name": "A", "command": "echo a", "port": 3000},
-        "b": {"name": "B", "command": "echo b", "port": 3000}
-      },
-      "settings": {}
-    }`
+	config := `
+name: test
+services:
+  a:
+    command: echo a
+    port: 3000
+  b:
+    command: echo b
+    port: 3000
+`
 	path := writeTestConfig(t, config)
-	_, err := Load(path)
+	_, err := LoadFile(path)
 	if err == nil {
 		t.Fatal("expected duplicate port error, got nil")
 	}
@@ -116,9 +130,9 @@ func TestLoadDetectsDuplicatePort(t *testing.T) {
 
 func TestResolveTarget(t *testing.T) {
 	path := writeTestConfig(t, minimalConfig)
-	cfg, err := Load(path)
+	cfg, err := LoadFile(path)
 	if err != nil {
-		t.Fatalf("Load() error: %v", err)
+		t.Fatalf("LoadFile() error: %v", err)
 	}
 
 	// All.
@@ -157,9 +171,9 @@ func TestResolveTarget(t *testing.T) {
 
 func TestTopoSort(t *testing.T) {
 	path := writeTestConfig(t, minimalConfig)
-	cfg, err := Load(path)
+	cfg, err := LoadFile(path)
 	if err != nil {
-		t.Fatalf("Load() error: %v", err)
+		t.Fatalf("LoadFile() error: %v", err)
 	}
 
 	layers, err := cfg.TopoSort()
@@ -186,9 +200,9 @@ func TestTopoSort(t *testing.T) {
 
 func TestDependents(t *testing.T) {
 	path := writeTestConfig(t, minimalConfig)
-	cfg, err := Load(path)
+	cfg, err := LoadFile(path)
 	if err != nil {
-		t.Fatalf("Load() error: %v", err)
+		t.Fatalf("LoadFile() error: %v", err)
 	}
 
 	deps := cfg.Dependents("a")
@@ -205,9 +219,9 @@ func TestDependents(t *testing.T) {
 
 func TestGroupOrder(t *testing.T) {
 	path := writeTestConfig(t, minimalConfig)
-	cfg, err := Load(path)
+	cfg, err := LoadFile(path)
 	if err != nil {
-		t.Fatalf("Load() error: %v", err)
+		t.Fatalf("LoadFile() error: %v", err)
 	}
 
 	order := cfg.GroupOrder()

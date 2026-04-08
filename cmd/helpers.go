@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"errors"
-	"path/filepath"
 
 	"github.com/kb-labs/dev/internal/config"
 	"github.com/kb-labs/dev/internal/manager"
@@ -24,7 +23,7 @@ func loadManager() (*manager.Manager, error) {
 		return nil, err
 	}
 
-	rootDir := filepath.Dir(filepath.Dir(cfgPath)) // .kb/dev.config.json → root
+	rootDir := config.RootDir(cfgPath)
 	mgr := manager.New(cfg, rootDir)
 
 	// Resolve environment (node/pnpm paths).
@@ -38,5 +37,5 @@ func loadManager() (*manager.Manager, error) {
 
 // loadConfig reads and parses the config from the given path.
 func loadConfig(path string) (*config.Config, error) {
-	return config.Load(path)
+	return config.LoadFile(path)
 }

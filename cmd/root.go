@@ -4,8 +4,9 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
+	"github.com/kb-labs/dev/internal/config"
+	"github.com/kb-labs/dev/internal/manager"
 	"github.com/spf13/cobra"
 )
 
@@ -55,14 +56,35 @@ Examples:
 }
 
 // Execute is the main entry point called from main.go.
+//
+// In --json mode, any error that bubbles up to the root command is
+// emitted as a manager.Result envelope on stdout, so consumers always
+// get parseable JSON. Without this, a failed `kb-dev status --json`
+// would silently exit 1 with zero output — breaking any agent or UI
+// that expects a well-formed response.
+//
+// Commands that already emit their own JSON envelope (e.g. status,
+// doctor) must NOT return their errSilent sentinel in --json mode;
+// they should return nil after printing their own envelope.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		if !jsonMode {
-			out := newOutput()
-			out.Err(err.Error())
-		}
-		os.Exit(1)
+	err := rootCmd.Execute()
+	if err == nil {
+		return
 	}
+	if jsonMode {
+		// errSilent means the command already printed its own envelope.
+		// Any other error means nothing was printed, so we emit one here.
+		if err.Error() != "" {
+			_ = JSONOut(manager.Result{
+				OK:   false,
+				Hint: err.Error(),
+			})
+		}
+	} else {
+		out := newOutput()
+		out.Err(err.Error())
+	}
+	os.Exit(1)
 }
 
 func init() {
@@ -76,7 +98,7 @@ func init() {
 }
 
 // FindConfigPath resolves the config file path.
-// Priority: --config flag > walk up to find .kb/dev.config.json.
+// Priority: --config flag > config.Discover (walks up from cwd).
 func FindConfigPath() (string, error) {
 	if configPath != "" {
 		if _, err := os.Stat(configPath); err != nil {
@@ -90,19 +112,7 @@ func FindConfigPath() (string, error) {
 		return "", fmt.Errorf("cannot determine working directory: %w", err)
 	}
 
-	for {
-		candidate := filepath.Join(dir, ".kb", "dev.config.json")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-
-	return "", fmt.Errorf("config not found: .kb/dev.config.json (searched from cwd upward)")
+	return config.Discover(dir)
 }
 
 // ShouldCascade returns the resolved cascade behavior.

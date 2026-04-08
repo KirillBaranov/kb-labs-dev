@@ -1,10 +1,9 @@
-// Package config parses .kb/dev.config.json into strongly-typed Go structs.
+// Package config loads and validates service definitions from either
+// .kb/dev.config.json (KB Labs native) or devservices.yaml (standalone).
 package config
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 )
 
@@ -18,7 +17,8 @@ const (
 	ServiceTypeDocker ServiceType = "docker"
 )
 
-// Config is the top-level dev.config.json structure.
+// Config is the canonical in-memory representation of a service config,
+// regardless of the source format (JSON or YAML).
 type Config struct {
 	Version  string              `json:"version"`
 	Name     string              `json:"name"`
@@ -43,137 +43,24 @@ type Service struct {
 	DependsOn   []string          `json:"dependsOn,omitempty"`
 	Optional    bool              `json:"optional,omitempty"`
 	Note        string            `json:"note,omitempty"`
-	Target      string            `json:"target,omitempty"` // future: "local", "docker-compose", "ssh://..."
+	Target      string            `json:"target,omitempty"`
+	// API holds optional developer-facing metadata about the service's HTTP API.
+	// Informational only — not used for routing or health checks.
+	API *ServiceAPI `json:"api,omitempty"`
 }
 
-// Settings controls runtime behavior.
+// ServiceAPI holds optional developer-facing documentation about a service's HTTP API.
+type ServiceAPI struct {
+	Docs      string   `json:"docs,omitempty"`
+	Endpoints []string `json:"endpoints,omitempty"`
+}
+
+// Settings controls runtime behaviour.
 type Settings struct {
 	LogsDir             string `json:"logsDir"`
 	PIDDir              string `json:"pidDir"`
 	StartTimeout        int    `json:"startTimeout"`        // milliseconds
 	HealthCheckInterval int    `json:"healthCheckInterval"` // milliseconds
-}
-
-// Load reads and validates a config from the given path.
-func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
-	}
-
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
-	}
-
-	cfg.applyDefaults()
-
-	if err := cfg.validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
-	}
-
-	return &cfg, nil
-}
-
-func (c *Config) applyDefaults() {
-	if c.Settings.LogsDir == "" {
-		c.Settings.LogsDir = ".kb/logs/tmp"
-	}
-	if c.Settings.PIDDir == "" {
-		c.Settings.PIDDir = ".kb/tmp"
-	}
-	if c.Settings.StartTimeout == 0 {
-		c.Settings.StartTimeout = 30000
-	}
-	if c.Settings.HealthCheckInterval == 0 {
-		c.Settings.HealthCheckInterval = 1000
-	}
-
-	for id, svc := range c.Services {
-		if svc.Type == "" {
-			svc.Type = ServiceTypeNode
-		}
-		if svc.Target == "" {
-			svc.Target = "local"
-		}
-		c.Services[id] = svc
-	}
-}
-
-func (c *Config) validate() error {
-	// Check all dependsOn references exist.
-	for id, svc := range c.Services {
-		for _, dep := range svc.DependsOn {
-			if _, ok := c.Services[dep]; !ok {
-				return fmt.Errorf("service %q depends on unknown service %q", id, dep)
-			}
-		}
-	}
-
-	// Detect cycles.
-	if err := c.detectCycles(); err != nil {
-		return err
-	}
-
-	// Check port uniqueness.
-	ports := make(map[int]string)
-	for id, svc := range c.Services {
-		if svc.Port == 0 {
-			continue
-		}
-		if other, ok := ports[svc.Port]; ok {
-			return fmt.Errorf("port %d used by both %q and %q", svc.Port, other, id)
-		}
-		ports[svc.Port] = id
-	}
-
-	return nil
-}
-
-func (c *Config) detectCycles() error {
-	const (
-		white = 0 // unvisited
-		gray  = 1 // in progress
-		black = 2 // done
-	)
-
-	colors := make(map[string]int)
-	var path []string
-
-	var visit func(string) error
-	visit = func(id string) error {
-		colors[id] = gray
-		path = append(path, id)
-
-		svc := c.Services[id]
-		for _, dep := range svc.DependsOn {
-			switch colors[dep] {
-			case gray:
-				// Found a cycle.
-				cycle := make([]string, len(path)+1)
-				copy(cycle, path)
-				cycle[len(path)] = dep
-				return fmt.Errorf("dependency cycle: %v", cycle)
-			case white:
-				if err := visit(dep); err != nil {
-					return err
-				}
-			}
-		}
-
-		path = path[:len(path)-1]
-		colors[id] = black
-		return nil
-	}
-
-	for id := range c.Services {
-		if colors[id] == white {
-			if err := visit(id); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // ResolveTarget converts a target string into a list of service IDs.
@@ -182,26 +69,20 @@ func (c *Config) ResolveTarget(target string) ([]string, error) {
 	if target == "" {
 		return c.allServiceIDs(), nil
 	}
-
-	// Check if it's a group.
 	if services, ok := c.Groups[target]; ok {
 		return services, nil
 	}
-
-	// Check if it's a service.
 	if _, ok := c.Services[target]; ok {
 		return []string{target}, nil
 	}
-
 	return nil, fmt.Errorf("unknown service or group: %q", target)
 }
 
 // TopoSort returns services in topological order grouped into parallel layers.
 // Services within the same layer have no mutual dependencies and can start concurrently.
 func (c *Config) TopoSort() ([][]string, error) {
-	// Build adjacency: service → its dependencies.
 	inDegree := make(map[string]int)
-	dependents := make(map[string][]string) // dep → list of services that depend on it
+	dependents := make(map[string][]string)
 
 	for id := range c.Services {
 		inDegree[id] = 0
@@ -213,16 +94,14 @@ func (c *Config) TopoSort() ([][]string, error) {
 		}
 	}
 
-	// Kahn's algorithm with layer tracking.
 	var layers [][]string
 	var queue []string
-
 	for id, deg := range inDegree {
 		if deg == 0 {
 			queue = append(queue, id)
 		}
 	}
-	sort.Strings(queue) // deterministic order
+	sort.Strings(queue)
 
 	for len(queue) > 0 {
 		layer := make([]string, len(queue))
@@ -243,7 +122,6 @@ func (c *Config) TopoSort() ([][]string, error) {
 		queue = next
 	}
 
-	// Check all services were placed.
 	total := 0
 	for _, layer := range layers {
 		total += len(layer)
@@ -282,29 +160,27 @@ func (c *Config) Dependents(target string) []string {
 	return result
 }
 
-// GroupOrder returns group names in the order they appear in the config.
+// GroupOrder returns group names in stable display order.
+// Conventional groups (infra, backend, …) come first; remaining groups follow alphabetically.
 func (c *Config) GroupOrder() []string {
-	// Since map iteration is non-deterministic, derive order from services.
+	conventional := []string{"infra", "backend", "execution", "local", "ui", "ui-web"}
 	seen := make(map[string]bool)
 	var order []string
-	for _, services := range c.Groups {
-		_ = services // just need to iterate keys
-	}
-	// Hardcoded conventional order (matches dev.sh).
-	conventional := []string{"infra", "backend", "execution", "local", "ui", "ui-web"}
+
 	for _, g := range conventional {
 		if _, ok := c.Groups[g]; ok {
 			seen[g] = true
 			order = append(order, g)
 		}
 	}
-	// Append any remaining groups.
+	var rest []string
 	for g := range c.Groups {
 		if !seen[g] {
-			order = append(order, g)
+			rest = append(rest, g)
 		}
 	}
-	return order
+	sort.Strings(rest)
+	return append(order, rest...)
 }
 
 func (c *Config) allServiceIDs() []string {

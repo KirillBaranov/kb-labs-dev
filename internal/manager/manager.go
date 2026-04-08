@@ -54,6 +54,23 @@ func New(cfg *config.Config, rootDir string) *Manager {
 	return m
 }
 
+// spawnEnv returns the env map to pass to a spawned service, merging the
+// service's own Env with KB Labs conventional variables (KB_PROJECT_ROOT) so
+// that services using @kb-labs/core-runtime's loadPlatformConfig / resolveRoots
+// can locate the user's .kb/kb.config.json regardless of their own cwd.
+func (m *Manager) spawnEnv(svcEnv map[string]string) map[string]string {
+	merged := make(map[string]string, len(svcEnv)+1)
+	for k, v := range svcEnv {
+		merged[k] = v
+	}
+	// Do not overwrite if already set — the service or the launching shell
+	// may have a good reason to pin it to a different value.
+	if _, ok := merged["KB_PROJECT_ROOT"]; !ok {
+		merged["KB_PROJECT_ROOT"] = m.rootDir
+	}
+	return merged
+}
+
 // Reconcile checks PID files against running processes and updates service states.
 func (m *Manager) Reconcile() error {
 	pidDir := filepath.Join(m.rootDir, m.cfg.Settings.PIDDir)
@@ -240,6 +257,7 @@ func (m *Manager) startDocker(ctx context.Context, svc *service.Service) Action 
 	// Run docker command via spawn.
 	_, err := process.Spawn(process.SpawnOpts{
 		Command:  svc.Config.Command,
+		Env:      m.spawnEnv(svc.Config.Env),
 		Dir:      m.rootDir,
 		LogFile:  logger.LogPath(logsDir, svc.ID),
 		EnvCache: m.envCache,
@@ -284,7 +302,7 @@ func (m *Manager) startNode(ctx context.Context, svc *service.Service) Action {
 
 	result, err := process.Spawn(process.SpawnOpts{
 		Command:  svc.Config.Command,
-		Env:      svc.Config.Env,
+		Env:      m.spawnEnv(svc.Config.Env),
 		Dir:      m.rootDir,
 		LogFile:  logger.LogPath(logsDir, svc.ID),
 		EnvCache: m.envCache,

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/kb-labs/dev/internal/config"
 	"github.com/kb-labs/dev/internal/logger"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +28,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	rootDir := filepath.Dir(filepath.Dir(cfgPath)) // .kb/dev.config.json → root
+	rootDir := config.RootDir(cfgPath)
 
 	// Minimal config read for logsDir.
 	cfg, err := loadConfig(cfgPath)

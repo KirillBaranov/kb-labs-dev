@@ -1,12 +1,12 @@
 # kb-dev
 
-**Local service manager for the KB Labs platform.**
+**Local service manager — works with any project, built for KB Labs.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8.svg)](https://go.dev)
 [![KB Labs](https://img.shields.io/badge/KB_Labs-platform-7C3AED.svg)](https://github.com/KirillBaranov)
 
-kb-dev manages local development services with proper process tracking, health checks, dependency ordering, and auto-restart. It replaces the bash-based `dev.sh` with a single Go binary.
+kb-dev manages local development services with proper process tracking, health checks, dependency ordering, and auto-restart. It replaces hand-rolled `Makefile` / `dev.sh` scripts with a single Go binary that works in any project.
 
 ## Features
 
@@ -22,69 +22,134 @@ kb-dev manages local development services with proper process tracking, health c
 - ✅ **JSONL streaming** — real-time event monitoring via `watch`
 - ✅ **Docker/Colima** — auto-detect and start Docker runtime on macOS
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/KirillBaranov/kb-labs-dev/main/install.sh | sh
+```
+
+Or pin a version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/KirillBaranov/kb-labs-dev/main/install.sh | sh -s -- --version v1.2.3
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/KirillBaranov/kb-labs-dev
+cd kb-labs-dev
+make build
+```
+
 ## Quick Start
 
 ```bash
-# Build from source
-cd infra/kb-labs-dev
-make build
+# 1. Create devservices.yaml in your project root
+cat > devservices.yaml << 'EOF'
+name: my-project
 
-# Check environment
-./kb-dev doctor
+services:
+  postgres:
+    command: docker run --rm -p 5432:5432 -e POSTGRES_PASSWORD=dev postgres:16
+    type: docker
+    port: 5432
+    health_check: http://localhost:5432
 
-# Start all services
-./kb-dev start
+  api:
+    command: pnpm dev
+    port: 3000
+    health_check: http://localhost:3000/health
+    depends_on: [postgres]
+EOF
 
-# Status with latency
-./kb-dev status
+# 2. Start everything
+kb-dev start
 
-# Agent-friendly: ensure services are alive (idempotent)
-./kb-dev ensure rest gateway --json
+# 3. Check status
+kb-dev status
+
+# 4. Tear down
+kb-dev stop
 ```
 
-## How It Works
+## Configuration
 
+kb-dev discovers config by walking up from the current directory. It checks these locations in order:
+
+| Location | Used when |
+|----------|-----------|
+| `.kb/devservices.yaml` | KB Labs project (platform-native) |
+| `devservices.yaml` | Any project (standalone) |
+| `devservices.yml` | Any project (standalone, alt extension) |
+
+You can also pass an explicit path: `kb-dev --config path/to/devservices.yaml start`
+
+### devservices.yaml reference
+
+```yaml
+name: my-project
+
+# Optional: declare groups for bulk operations (kb-dev start infra)
+# If omitted, groups are inferred from service.group fields
+groups:
+  infra:   [postgres, redis]
+  backend: [api, worker]
+
+services:
+  postgres:
+    name: PostgreSQL              # display name (optional, defaults to key)
+    description: Primary database # optional
+    group: infra                  # optional, used to infer groups map
+    type: docker                  # "node" (default) | "docker"
+    command: docker run --rm -p 5432:5432 postgres:16
+    stop_command: docker stop postgres  # optional, for docker services
+    container: postgres           # container name to track (docker only)
+    health_check: http://localhost:5432  # HTTP URL, TCP addr, or shell command
+    port: 5432
+    url: http://localhost:5432    # display URL in status table
+    depends_on: [redis]           # start order + cascade stop
+    optional: true                # don't fail startup if this service fails
+    note: "Needs 'docker login' first"  # shown in status output
+    env:
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: myapp
+    api:                          # informational only — not used for routing
+      docs: http://localhost:5432/docs
+      endpoints:
+        - GET /health
+
+# Optional: override runtime directories and timeouts
+settings:
+  logs_dir: .kb/logs/tmp              # default
+  pid_dir: .kb/tmp                    # default
+  start_timeout_ms: 30000             # default
+  health_check_interval_ms: 1000      # default
 ```
-                    ┌─────────────┐
-                    │ dev.config   │  .kb/dev.config.json
-                    │   .json      │  (12 services, 6 groups)
-                    └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │   Config    │  Parse, validate, toposort
-                    │   Parser    │
-                    └──────┬──────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-        ┌──────────┐ ┌──────────┐ ┌──────────┐
-        │ Environ  │ │  Health  │ │  Docker  │
-        │ Resolve  │ │  Probes  │ │  Colima  │
-        └────┬─────┘ └────┬─────┘ └────┬─────┘
-             │            │            │
-             └────────────┼────────────┘
-                          ▼
-                   ┌─────────────┐
-                   │   Manager   │  Start/Stop/Ensure/Ready/Watch
-                   │             │  Dependency graph, parallel layers
-                   └──────┬──────┘
-                          │
-              ┌───────────┼───────────┐
-              ▼           ▼           ▼
-        ┌──────────┐ ┌──────────┐ ┌──────────┐
-        │ Process  │ │ Service  │ │ Watchdog │
-        │  Spawn   │ │  State   │ │  Auto-   │
-        │ + Kill   │ │ Machine  │ │ restart  │
-        └──────────┘ └──────────┘ └──────────┘
+
+### Service types
+
+**`node`** (default) — spawned directly by kb-dev. PID is tracked from `cmd.Start()`.
+
+```yaml
+api:
+  type: node
+  command: node dist/index.js
 ```
 
-**PID-first approach:** kb-dev knows the PID because it spawned the process. No more `lsof` guessing — port checks are only used for `--force` and `doctor`.
+**`docker`** — started via shell command. Health is checked via the configured probe.
 
-**State machine per service:** `dead` → `starting` → `alive` | `failed` → `stopping` → `dead`. Each transition is validated. No more if/else chains.
+```yaml
+postgres:
+  type: docker
+  command: docker-compose up -d postgres
+  stop_command: docker-compose stop postgres
+  container: postgres
+```
 
 ## Commands
 
-### Core Commands
+### Core
 
 | Command | Description |
 |---------|-------------|
@@ -96,13 +161,13 @@ make build
 | `kb-dev logs <service>` | View service logs (with `--follow`) |
 | `kb-dev doctor` | Environment diagnostics |
 
-### Agent Commands
+### Agent-friendly
 
 | Command | Description |
 |---------|-------------|
 | `kb-dev ensure <targets...>` | Idempotent desired state (alive→skip, dead→start, failed→restart) |
-| `kb-dev ready <targets...>` | Block until all services are alive (gate) |
-| `kb-dev watch` | Stream lifecycle events in real-time |
+| `kb-dev ready <targets...>` | Block until all services are alive |
+| `kb-dev watch` | Stream lifecycle events as JSONL |
 
 ### Flags
 
@@ -112,59 +177,52 @@ make build
 | `--force` | Kill port conflicts before starting |
 | `--cascade` | Stop/restart dependent services too |
 | `--no-cascade` | Skip dependent cascade on restart |
-| `--config <path>` | Override config file path |
+| `--config <path>` | Explicit config file path |
 
 ### Start
 
 ```bash
 kb-dev start                    # all services
-kb-dev start infra              # infrastructure group
-kb-dev start rest               # single service (with deps)
-kb-dev start --force            # kill port conflicts
+kb-dev start infra              # group
+kb-dev start api                # single service (with deps)
+kb-dev start --force            # kill port conflicts first
 kb-dev start --watch            # stay alive, auto-restart on crash
 ```
 
 ### Status
 
 ```bash
-kb-dev status                   # human-readable table
-kb-dev status --json            # machine-readable with depsState
+kb-dev status
+kb-dev status --json
 ```
 
-Human output:
 ```
-KB Labs Services
+my-project
 
   [infra]
-  ● qdrant              6333    alive       http://localhost:6333  12m   5ms
-  ● redis               6379    alive                              12m   1ms
-  ● state-daemon        7777    alive       http://localhost:7777  11m   6ms
+  ● postgres            5432    alive       http://localhost:5432  4m    3ms
+  ● redis               6379    alive                              4m    1ms
 
   [backend]
-  ◉ workflow            7778    starting    http://localhost:7778  3s
-  ○ rest                5050    dead        http://localhost:5050
-  ✕ gateway             4000    failed      http://localhost:4000
-    ↳ health check timeout after 30s
+  ● api                 3000    alive       http://localhost:3000  3m    12ms
+  ○ worker                      dead
 
-  1 alive  1 starting  1 failed  9 dead  (12 total)
+  3 alive  1 dead  (4 total)
 ```
 
-### Ensure (Agent-Friendly)
+### Ensure (agent-friendly)
 
 ```bash
-# Idempotent: "make sure rest is alive, handle everything"
-kb-dev ensure rest gateway --json
+kb-dev ensure api worker --json
 ```
 
 ```json
 {
   "ok": true,
   "actions": [
-    {"service": "redis", "action": "skipped", "reason": "already alive"},
-    {"service": "state-daemon", "action": "skipped", "reason": "already alive"},
-    {"service": "workflow", "action": "started", "elapsed": "2.1s"},
-    {"service": "rest", "action": "started", "elapsed": "3.4s"},
-    {"service": "gateway", "action": "started", "elapsed": "1.8s"}
+    {"service": "postgres", "action": "skipped", "reason": "already alive"},
+    {"service": "api",      "action": "skipped", "reason": "already alive"},
+    {"service": "worker",   "action": "started", "elapsed": "1.2s"}
   ]
 }
 ```
@@ -179,26 +237,26 @@ kb-dev doctor --json
 {
   "ok": false,
   "checks": [
-    {"id": "config", "ok": true, "detail": "12 services, 6 groups"},
-    {"id": "docker", "ok": true, "detail": "Docker 28.4.0"},
-    {"id": "node", "ok": true, "detail": "v20.19.4", "path": "/Users/.../.nvm/.../node"},
-    {"id": "port:3000", "ok": false, "detail": "occupied (PID 2454), needed by studio"}
+    {"id": "config", "ok": true,  "detail": "4 services, 2 groups"},
+    {"id": "docker", "ok": true,  "detail": "Docker 28.4.0"},
+    {"id": "node",   "ok": true,  "detail": "v22.0.0"},
+    {"id": "port:3000", "ok": false, "detail": "occupied (PID 1234), needed by api"}
   ],
-  "hint": "Port 3000 occupied. Fix: kb-dev stop studio --force"
+  "hint": "Port 3000 occupied. Fix: kb-dev stop api --force"
 }
 ```
 
-### Watch (JSONL Streaming)
+### Watch (JSONL)
 
 ```bash
 kb-dev watch --json
 ```
 
 ```
-{"event":"health","service":"rest","ok":true,"latency":"45ms","ts":"2026-03-30T14:30:00Z"}
-{"event":"crashed","service":"rest","exitCode":1,"logsTail":["Error: ..."],"ts":"..."}
-{"event":"restarting","service":"rest","attempt":1,"backoff":"1s","ts":"..."}
-{"event":"alive","service":"rest","latency":"50ms","ts":"..."}
+{"event":"health",     "service":"api","ok":true, "latency":"12ms","ts":"..."}
+{"event":"crashed",    "service":"api","exitCode":1,"logsTail":["Error: ..."],"ts":"..."}
+{"event":"restarting", "service":"api","attempt":1,"backoff":"1s","ts":"..."}
+{"event":"alive",      "service":"api","latency":"15ms","ts":"..."}
 ```
 
 ## Agent Protocol
@@ -210,52 +268,61 @@ Every JSON response follows a consistent contract:
 | `ok` | bool | always | Operation succeeded |
 | `hint` | string | on failure | Exact command to fix the issue |
 | `actions` | array | on mutations | What was done per service |
-| `logsTail` | array | on failure | Last 5 log lines (no second call needed) |
+| `logsTail` | array | on failure | Last 5 log lines |
 | `depsState` | map | in status | Dependency states at a glance |
 
 **Agent workflow:**
 ```bash
-kb-dev doctor --json          # 1. diagnose
-kb-dev ensure rest --json     # 2. bring up what I need
-kb-dev ready rest --json      # 3. wait until ready
-# ... work ...
-kb-dev status --json          # 4. check state
+kb-dev doctor --json          # 1. diagnose environment
+kb-dev ensure api --json      # 2. bring up what I need (idempotent)
+kb-dev ready api --json       # 3. block until alive
+# ... do work ...
+kb-dev status --json          # 4. verify final state
 ```
 
-## Configuration
+## How It Works
 
-kb-dev reads `.kb/dev.config.json` (auto-discovered by walking up from cwd):
-
-```json
-{
-  "services": {
-    "state-daemon": {
-      "name": "State Daemon",
-      "type": "node",
-      "command": "node ./platform/.../dist/bin.cjs",
-      "healthCheck": "http://localhost:7777/health",
-      "port": 7777,
-      "dependsOn": ["redis"],
-      "env": {"KB_STATE_DAEMON_PORT": "7777"}
-    }
-  },
-  "groups": {
-    "infra": ["qdrant", "redis", "state-daemon"],
-    "backend": ["workflow", "rest", "gateway"]
-  },
-  "settings": {
-    "logsDir": ".kb/logs/tmp",
-    "pidDir": ".kb/tmp",
-    "startTimeout": 30000,
-    "healthCheckInterval": 1000
-  }
-}
 ```
+                 ┌──────────────────────┐
+                 │   devservices.yaml   │  .kb/devservices.yaml  (KB Labs)
+                 │                      │  devservices.yaml      (standalone)
+                 └──────────┬───────────┘
+                            │
+                 ┌──────────▼───────────┐
+                 │    Config / Loader   │  Discover, parse, validate, toposort
+                 └──────────┬───────────┘
+                            │
+           ┌────────────────┼────────────────┐
+           ▼                ▼                ▼
+     ┌──────────┐     ┌──────────┐     ┌──────────┐
+     │ Environ  │     │  Health  │     │  Docker  │
+     │ Resolve  │     │  Probes  │     │  Colima  │
+     └────┬─────┘     └────┬─────┘     └────┬─────┘
+          │                │                │
+          └────────────────┼────────────────┘
+                           ▼
+                  ┌─────────────────┐
+                  │    Manager      │  Start/Stop/Ensure/Ready/Watch
+                  │                 │  Dependency graph, parallel layers
+                  └────────┬────────┘
+                           │
+           ┌───────────────┼───────────────┐
+           ▼               ▼               ▼
+     ┌──────────┐    ┌──────────┐    ┌──────────┐
+     │ Process  │    │ Service  │    │ Watchdog │
+     │  Spawn   │    │  State   │    │  Auto-   │
+     │ + Kill   │    │ Machine  │    │ restart  │
+     └──────────┘    └──────────┘    └──────────┘
+```
+
+**PID-first:** kb-dev knows the PID because it spawned the process. No `lsof` guessing — port checks are only used for `--force` and `doctor`.
+
+**State machine per service:** `dead` → `starting` → `alive` | `failed` → `stopping` → `dead`.
 
 ## Architecture
 
 ```
-infra/kb-labs-dev/
+kb-labs-dev/
 ├── main.go                         entry point (build-time version injection)
 ├── cmd/
 │   ├── root.go                     cobra root, global flags, config discovery
@@ -272,7 +339,11 @@ infra/kb-labs-dev/
 │   ├── helpers.go                  shared loadManager, errSilent
 │   └── output.go                   lipgloss formatting
 └── internal/
-    ├── config/                     parse dev.config.json, toposort, validation
+    ├── config/                     discover + parse devservices.yaml, toposort, validation
+    │   ├── config.go               Config/Service types, query methods
+    │   ├── loader.go               Discover(), LoadFile(), RootDir()
+    │   ├── yaml.go                 devservices.yaml parser → Config
+    │   └── defaults.go             applyDefaults(), validate()
     ├── environ/                    resolve node/pnpm paths, env cache
     ├── health/                     HTTP/TCP/Command probes + latency
     ├── process/                    spawn (Setpgid), kill (group), rich PID files
@@ -286,10 +357,10 @@ infra/kb-labs-dev/
 
 | Point | How to Extend |
 |-------|--------------|
-| New service runner | Implement `service.Runner` interface (e.g., DockerComposeRunner, RemoteRunner) |
+| New service runner | Implement `service.Runner` interface (e.g. `DockerComposeRunner`, `RemoteRunner`) |
 | New health probe | Add probe type in `health/probe.go`, extend `ClassifyProbe` |
 | New CLI command | Add `cmd/<name>.go` with cobra command, register in `init()` |
-| Config migration | Bump config version, add migration logic in `config.Load()` |
+| Config migration | Bump config version, add migration logic in `loader.go` |
 | Remote API | Wrap `Manager` methods in HTTP handlers (same JSON schema) |
 
 ## Development
@@ -297,35 +368,25 @@ infra/kb-labs-dev/
 ```bash
 # Prerequisites: Go 1.24+, golangci-lint
 
-# Build
-make build
-
-# Run tests (with race detector)
-make test
-
-# Run linter
-make lint
-
-# Coverage report
-make cover
-
-# Build for all platforms (via goreleaser)
-make snapshot
+make build      # build for current platform
+make test       # run tests with race detector
+make lint       # golangci-lint
+make cover      # coverage report (opens coverage.html)
+make snapshot   # cross-platform build via goreleaser
 ```
 
-## Comparison with dev.sh
+## Comparison
 
-| Aspect | dev.sh | kb-dev |
-|--------|--------|--------|
+| Aspect | Makefile / dev.sh | kb-dev |
+|--------|-------------------|--------|
 | Process tracking | `lsof` port check | PID from `cmd.Start()` |
-| Kill mechanism | Recursive `pgrep -P` | `syscall.Kill(-pgid)` |
-| Health check missing | Assumes healthy | Reports dead |
-| Alien process on port | "alive" | "dead" (correct) |
-| Auto-restart | None | Watchdog with backoff |
-| Parallel start | Serial loop | Goroutine per service |
-| Agent support | `--json` flag only | `ensure`, `ready`, `watch`, `depsState`, `hint` |
+| Kill mechanism | Recursive `pgrep -P` | `syscall.Kill(-pgid)` (whole tree) |
+| Health check | None | HTTP/TCP/command probes with latency |
+| Auto-restart | None | Watchdog with exponential backoff |
+| Parallel start | Serial loop | Goroutine per service, toposort layers |
+| Agent support | None | `ensure`, `ready`, `watch`, `depsState`, `hint` |
 | PID files | Bare number | JSON (user, timestamp, command) |
-| Concurrent safety | None (race conditions) | `flock` cross-process lock (30s timeout) |
+| Concurrent safety | None | `flock` cross-process lock |
 | Resource monitoring | None | CPU% + memory per service |
 | Shell dependency | bash, jq, curl, lsof | Single Go binary |
 
