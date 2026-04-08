@@ -58,9 +58,7 @@ func LoadFile(path string) (*Config, error) {
 }
 
 // RootDir returns the project root implied by a config path.
-//
-// For .kb/dev.config.json:  <root>/.kb/dev.config.json → <root>
-// For devservices.yaml:     <root>/devservices.yaml     → <root>
+// For configs inside .kb/, it steps up one extra level to return the true root.
 func RootDir(configPath string) string {
 	abs, _ := filepath.Abs(configPath)
 	dir := filepath.Dir(abs)
