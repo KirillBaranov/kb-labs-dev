@@ -12,10 +12,10 @@ import (
 // is not polluted with YAML struct tags, and so the mapping
 // between the two formats is explicit and testable.
 type yamlFile struct {
-	Name     string                  `yaml:"name"`
-	Services map[string]yamlService  `yaml:"services"`
-	Groups   map[string][]string     `yaml:"groups"`
-	Settings *yamlSettings           `yaml:"settings"`
+	Name     string                 `yaml:"name"`
+	Services map[string]yamlService `yaml:"services"`
+	Groups   map[string][]string    `yaml:"groups"`
+	Settings *yamlSettings          `yaml:"settings"`
 }
 
 type yamlService struct {
@@ -61,6 +61,10 @@ func loadYAML(path string) (*Config, error) {
 	var yf yamlFile
 	if err := yaml.Unmarshal(data, &yf); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	if err := expandEnv(&yf, RootDir(path)); err != nil {
+		return nil, fmt.Errorf("env expansion: %w", err)
 	}
 
 	cfg, err := mapYAML(&yf)

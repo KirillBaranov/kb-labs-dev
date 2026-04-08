@@ -127,6 +127,50 @@ settings:
   health_check_interval_ms: 1000      # default
 ```
 
+### Environment variables
+
+Any string field in `devservices.yaml` supports `${VAR}` substitution:
+
+```yaml
+services:
+  postgres:
+    command: docker run --rm -p 5432:5432 -e POSTGRES_PASSWORD=${DB_PASSWORD} postgres:16
+    type: docker
+    port: 5432
+    health_check: http://localhost:5432
+
+  api:
+    command: node dist/index.js
+    port: 3000
+    url: http://localhost:3000
+    env:
+      DATABASE_URL: ${DATABASE_URL}
+      API_KEY: ${API_KEY}
+      PORT: "3000"        # literal — no substitution needed
+```
+
+Variables are resolved from two sources, in priority order:
+
+1. **Process environment** (`export VAR=value` / shell env / CI secrets)
+2. **`.env` file** in the project root (silently skipped if missing)
+
+Process env always wins over `.env`. If a referenced variable is not found in either source, startup fails with a clear error:
+
+```
+env expansion: service "api": environment variable "API_KEY" is not set
+```
+
+**.env file format:**
+
+```bash
+# .env — never commit secrets
+DATABASE_URL=postgres://localhost/myapp
+DB_PASSWORD=dev
+API_KEY="my secret key"   # quotes are stripped
+```
+
+Comments (`#`), blank lines, and quoted values are all supported.
+
 ### Service types
 
 **`node`** (default) — spawned directly by kb-dev. PID is tracked from `cmd.Start()`.
