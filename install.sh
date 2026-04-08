@@ -108,8 +108,13 @@ case "$ARCH" in
     ;;
 esac
 
+EXT=""
 case "$OS" in
   darwin|linux) ;;
+  mingw*|msys*|cygwin*)
+    OS="windows"
+    EXT=".exe"
+    ;;
   *)
     err "Unsupported OS: $OS"
     exit 1
@@ -137,7 +142,7 @@ else
   BASE_URL="https://github.com/${REPO}/releases/download/${RESOLVED_VERSION}"
 fi
 
-BINARY_FILE="${BINARY}-${OS}-${ARCH}"
+BINARY_FILE="${BINARY}-${OS}-${ARCH}${EXT}"
 BINARY_URL="${BASE_URL}/${BINARY_FILE}"
 CHECKSUMS_URL="${BASE_URL}/checksums.txt"
 

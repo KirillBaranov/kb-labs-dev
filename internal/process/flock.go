@@ -4,13 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
 const defaultLockTimeout = 30 * time.Second
 
-// FileLock is a cross-process advisory lock using flock(2).
+// FileLock is a cross-process advisory lock.
 // Prevents multiple kb-dev instances from starting/stopping services concurrently.
 type FileLock struct {
 	path string
@@ -38,7 +37,7 @@ func AcquireLockTimeout(pidDir string, timeout time.Duration) (*FileLock, error)
 	}
 
 	// Try non-blocking first — fast path.
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+	if flockLock(f) == nil {
 		return &FileLock{path: lockPath, file: f}, nil
 	}
 
@@ -46,7 +45,7 @@ func AcquireLockTimeout(pidDir string, timeout time.Duration) (*FileLock, error)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
-		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+		if flockLock(f) == nil {
 			return &FileLock{path: lockPath, file: f}, nil
 		}
 	}
@@ -69,7 +68,7 @@ func TryLock(pidDir string) (*FileLock, error) {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
 
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if flockLock(f) != nil {
 		_ = f.Close()
 		return nil, nil // lock held by another process
 	}
@@ -80,7 +79,7 @@ func TryLock(pidDir string) (*FileLock, error) {
 // Release releases the lock and closes the file.
 func (l *FileLock) Release() {
 	if l.file != nil {
-		_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+		flockUnlock(l.file)
 		_ = l.file.Close()
 	}
 }

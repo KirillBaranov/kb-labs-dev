@@ -5,82 +5,50 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
 const pollInterval = 100 * time.Millisecond
 
-// KillGroup sends SIGTERM to the entire process group, waits up to gracePeriod,
-// then sends SIGKILL if the group is still alive.
+// KillGroup terminates the process group with graceful shutdown.
+// Sends SIGTERM (Unix) or taskkill (Windows), waits up to gracePeriod,
+// then force-kills if the group is still alive.
 func KillGroup(pgid int, gracePeriod time.Duration) error {
-	// Send SIGTERM to the process group (negative pgid).
-	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil {
-		// ESRCH = no such process — already dead.
-		if err == syscall.ESRCH {
-			return nil
-		}
-		return fmt.Errorf("SIGTERM to pgid %d: %w", pgid, err)
-	}
-
-	// Poll until dead or grace period expires.
-	deadline := time.Now().Add(gracePeriod)
-	for time.Now().Before(deadline) {
-		if !groupAlive(pgid) {
-			return nil
-		}
-		time.Sleep(pollInterval)
-	}
-
-	// Still alive — force kill.
-	if groupAlive(pgid) {
-		if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
-			return fmt.Errorf("SIGKILL to pgid %d: %w", pgid, err)
-		}
-		time.Sleep(pollInterval) // brief wait for cleanup
-	}
-
-	return nil
+	return killGroup(pgid, pgid, gracePeriod)
 }
 
-// KillPort finds processes LISTENING on the given port and kills them.
-// Used for --force cleanup of alien processes.
+// KillGroupWithPID is like KillGroup but also passes the root PID.
+// On Windows, the PID is used since process groups do not exist.
+func KillGroupWithPID(pgid int, pid int, gracePeriod time.Duration) error {
+	return killGroup(pgid, pid, gracePeriod)
+}
+
+// KillPort finds processes listening on the given port and terminates them.
+// Used for --force cleanup of processes that conflict with a service's port.
 func KillPort(port int) error {
 	pids := GetListenerPIDs(port)
 	if len(pids) == 0 {
 		return nil
 	}
-
-	for _, pid := range pids {
-		_ = syscall.Kill(pid, syscall.SIGTERM)
-	}
-
-	time.Sleep(1 * time.Second)
-
-	for _, pid := range pids {
-		if IsAlive(pid) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
-	}
-
+	killPort(pids)
 	return nil
 }
 
-// IsAlive checks if a process with the given PID exists.
+// IsAlive reports whether the process with the given PID is still running.
 func IsAlive(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
+	return isAlive(pid)
 }
 
-// groupAlive checks if any process in the group is still alive.
-func groupAlive(pgid int) bool {
-	return syscall.Kill(-pgid, 0) == nil
-}
-
-// GetListenerPIDs finds PIDs listening on a TCP port using lsof.
+// GetListenerPIDs finds PIDs listening on a TCP port.
+// Uses lsof on Unix and netstat on Windows.
 func GetListenerPIDs(port int) []int {
+	return getListenerPIDs(port)
+}
+
+// getListenerPIDsLsof is the lsof-based implementation used on Unix.
+func getListenerPIDsLsof(port int) []int {
 	out, err := exec.Command("lsof", "-ti", fmt.Sprintf(":%d", port), "-sTCP:LISTEN").Output()
 	if err != nil {
-		// lsof returns exit 1 when no matches — not an error.
 		return nil
 	}
 

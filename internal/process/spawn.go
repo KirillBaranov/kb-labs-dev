@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 
 	"github.com/kb-labs/dev/internal/environ"
 )
@@ -40,7 +39,7 @@ func Spawn(opts SpawnOpts) (*SpawnResult, error) {
 	shellArgs := buildShellArgs(opts.Command)
 
 	cmd := exec.Command(shellArgs[0], shellArgs[1:]...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcAttrs(cmd)
 
 	if opts.Dir != "" {
 		cmd.Dir = opts.Dir
@@ -66,7 +65,7 @@ func Spawn(opts SpawnOpts) (*SpawnResult, error) {
 	}
 
 	pid := cmd.Process.Pid
-	pgid, err := syscall.Getpgid(pid)
+	pgid, err := getPgid(pid)
 	if err != nil {
 		pgid = pid // fallback: use PID as PGID
 	}
