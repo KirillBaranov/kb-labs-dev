@@ -16,9 +16,9 @@ func mkdirAll(t *testing.T, parts ...string) string {
 	return path
 }
 
-func writeFile(t *testing.T, path, content string) {
+func writeFile(t *testing.T, path string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(minimalYAMLContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -36,7 +36,7 @@ services:
 func TestDiscoverFindsKBLabsYAML(t *testing.T) {
 	root := t.TempDir()
 	kbDir := mkdirAll(t, root, ".kb")
-	writeFile(t, filepath.Join(kbDir, "devservices.yaml"), minimalYAMLContent)
+	writeFile(t, filepath.Join(kbDir, "devservices.yaml"))
 
 	got, err := Discover(root)
 	if err != nil {
@@ -50,7 +50,7 @@ func TestDiscoverFindsKBLabsYAML(t *testing.T) {
 
 func TestDiscoverFindsRootYAML(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "devservices.yaml"), minimalYAMLContent)
+	writeFile(t, filepath.Join(root, "devservices.yaml"))
 
 	got, err := Discover(root)
 	if err != nil {
@@ -64,7 +64,7 @@ func TestDiscoverFindsRootYAML(t *testing.T) {
 
 func TestDiscoverFindsYML(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "devservices.yml"), minimalYAMLContent)
+	writeFile(t, filepath.Join(root, "devservices.yml"))
 
 	got, err := Discover(root)
 	if err != nil {
@@ -81,8 +81,8 @@ func TestDiscoverFindsYML(t *testing.T) {
 func TestDiscoverKBLabsWinsOverRoot(t *testing.T) {
 	root := t.TempDir()
 	kbDir := mkdirAll(t, root, ".kb")
-	writeFile(t, filepath.Join(kbDir, "devservices.yaml"), minimalYAMLContent)
-	writeFile(t, filepath.Join(root, "devservices.yaml"), minimalYAMLContent)
+	writeFile(t, filepath.Join(kbDir, "devservices.yaml"))
+	writeFile(t, filepath.Join(root, "devservices.yaml"))
 
 	got, err := Discover(root)
 	if err != nil {
@@ -98,7 +98,7 @@ func TestDiscoverKBLabsWinsOverRoot(t *testing.T) {
 func TestDiscoverWalksUp(t *testing.T) {
 	root := t.TempDir()
 	kbDir := mkdirAll(t, root, ".kb")
-	writeFile(t, filepath.Join(kbDir, "devservices.yaml"), minimalYAMLContent)
+	writeFile(t, filepath.Join(kbDir, "devservices.yaml"))
 
 	subDir := mkdirAll(t, root, "packages", "my-service")
 
@@ -116,10 +116,10 @@ func TestDiscoverWalksUp(t *testing.T) {
 func TestDiscoverClosestWins(t *testing.T) {
 	root := t.TempDir()
 	kbDir := mkdirAll(t, root, ".kb")
-	writeFile(t, filepath.Join(kbDir, "devservices.yaml"), minimalYAMLContent)
+	writeFile(t, filepath.Join(kbDir, "devservices.yaml"))
 
 	subRoot := mkdirAll(t, root, "sub-project")
-	writeFile(t, filepath.Join(subRoot, "devservices.yaml"), minimalYAMLContent)
+	writeFile(t, filepath.Join(subRoot, "devservices.yaml"))
 
 	got, err := Discover(subRoot)
 	if err != nil {
